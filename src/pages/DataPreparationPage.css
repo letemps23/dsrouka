@@ -1,0 +1,33 @@
+.data-page {
+    background: white;
+    padding: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.05);
+  }
+  
+  .upload-block input[type="file"] {
+    width: 100%;
+    padding: 0.75rem;
+    font-size: 1rem;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+  }
+  
+  .buttons-block {
+    margin-top: 2rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 3rem; /* 👈 Agrandis ici */
+    flex-wrap: wrap; /* Pour que ça s’adapte sur mobile */
+  }
+  
+  
+  .buttons-block button {
+    flex: 1;
+    min-width: 180px;
+    padding: 0.9rem 1.5rem;
+    font-size: 1.1rem;
+    border-radius: 6px;
+  }
+  
+  
