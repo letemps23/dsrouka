@@ -5,12 +5,26 @@ from preprocessing import charger_et_nettoyer, interpoler_serie, analyse_avancee
 from model_lstm import entrainer_modele_lstm
 from fastapi.responses import FileResponse
 import os
+from fastapi import Query
+import re
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from statsmodels.tsa.arima.model import ARIMA
 from prophet import Prophet
 from sklearn.metrics import mean_squared_error, mean_absolute_error
+import unicodedata
+import matplotlib.pyplot as plt
+import io
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import TimeDistributed, Conv1D, MaxPooling1D, Flatten, LSTM, Dense
+from tensorflow.keras.callbacks import EarlyStopping
 
+from sklearn.preprocessing import MinMaxScaler
+import joblib
+from fastapi import APIRouter
+from datetime import timedelta
+from tensorflow.keras.models import load_model
+#matplotlib.use('Agg')
 
 
 #from fastapi import APIRouter
@@ -311,3 +325,316 @@ def prophet_json():
 
     except Exception as e:
         return JSONResponse(content={"error": str(e)}, status_code=500)
+    
+
+# chargement du fichier
+
+@app.get("/api/charger-donnees")
+def charger_donnees_excel_flexibles():
+    dossier = "data/"
+    fichiers_excel = [f for f in os.listdir(dossier) if f.endswith(".xlsx")]
+
+    mois_map = {
+        "janvier": "JANVIER", "fevrier": "FEVRIER", "février": "FEVRIER",
+        "mars": "MARS", "avril": "AVRIL", "mai": "MAI", "juin": "JUIN",
+        "juillet": "JUILLET", "aout": "AOUT", "août": "AOUT",
+        "septembre": "SEPTEMBRE", "octobre": "OCTOBRE",
+        "novembre": "NOVEMBRE", "decembre": "DECEMBRE", "décembre": "DECEMBRE"
+    }
+
+    colonnes_utiles = ['DATE', 'HEURES', 'LOME', 'ANFOIN', 'ATAKPAME', 'KARA',
+                       'SULZER1', 'SULZER2', 'CTL', 'KPIME', 'KARA_PROD']
+
+    def normaliser(texte):
+        return unicodedata.normalize('NFKD', texte).encode('ascii', 'ignore').decode('utf-8').lower()
+
+    toutes_les_donnees = []
+    fichiers_utilises = []
+    fichiers_ignores = []
+
+    for fichier in fichiers_excel:
+        chemin = os.path.join(dossier, fichier)
+        nom_normalise = normaliser(fichier)
+
+        match = re.search(r"(janvier|fevrier|février|mars|avril|mai|juin|juillet|aout|août|septembre|octobre|novembre|decembre|décembre)[ _-]+(\d{4})", nom_normalise)
+
+        if match:
+            mois_nom = match.group(1)
+            annee = int(match.group(2))
+            feuille = mois_map.get(mois_nom)
+
+            if feuille:
+                try:
+                    df = pd.read_excel(chemin, sheet_name=feuille, usecols=colonnes_utiles)
+                    df = df.fillna(0)
+
+                    conso_cols = ['LOME', 'ANFOIN', 'ATAKPAME', 'KARA', 'SULZER1',
+                                  'SULZER2', 'CTL', 'KPIME', 'KARA_PROD']
+                    df["CONSOMMATION_TOTALE"] = df[conso_cols].sum(axis=1)
+
+                    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+                    df["HEURES"] = df["HEURES"].astype(str).str.strip().str.replace("H", ":", regex=False)
+                    df["HEURES"] = df["HEURES"].apply(lambda x: x + ":00" if len(x) <= 5 else x)
+
+                    df["DATETIME"] = pd.to_datetime(
+                        df["DATE"].dt.strftime("%Y-%m-%d") + " " + df["HEURES"],
+                        format="%Y-%m-%d %H:%M:%S",
+                        errors="coerce"
+                    )
+
+                    df = df.dropna(subset=["DATETIME"])
+                    df = df.drop(columns=["DATE", "HEURES"])
+
+                    df["ANNEE"] = annee
+                    df["MOIS"] = feuille
+
+                    toutes_les_donnees.append(df)
+                    fichiers_utilises.append(fichier)
+
+                except Exception as e:
+                    fichiers_ignores.append((fichier, str(e)))
+            else:
+                fichiers_ignores.append((fichier, "Mois non reconnu"))
+        else:
+            fichiers_ignores.append((fichier, "Format nom de fichier invalide"))
+
+    if not toutes_les_donnees:
+        return JSONResponse(content={
+            "error": "Aucun fichier valide traité.",
+            "fichiers_ignores": fichiers_ignores
+        }, status_code=404)
+
+    # ✅ Fusionner les données
+    df_final = pd.concat(toutes_les_donnees, ignore_index=True)
+
+    # ✅ Nettoyage et filtrage datetime
+    df_final = df_final.dropna(subset=["DATETIME"])
+    df_final["DATETIME"] = pd.to_datetime(df_final["DATETIME"], errors="coerce")
+    df_final = df_final[(df_final["DATETIME"] >= "2014-01-01") & (df_final["DATETIME"] <= "2019-12-31")]
+
+    # ✅ Enregistrement du dataset nettoyé
+    df_final.to_excel("Dataset_6_ans_corrige.xlsx", index=False)
+
+    return JSONResponse(content={
+        "message": "✅ Données fusionnées et nettoyées avec succès.",
+        "lignes_totales": len(df_final),
+        "fichier_sortie": "Dataset_6_ans_corrige.xlsx",
+        "fichiers_utilises": fichiers_utilises,
+        "fichiers_ignores": fichiers_ignores
+    })
+
+
+
+
+#graphique
+
+
+#from fastapi.responses import StreamingResponse, JSONResponse
+#import pandas as pd
+#import matplotlib
+#matplotlib.use('Agg')
+#import matplotlib.pyplot as plt
+#import io
+
+@app.get("/api/graph-6ans")
+def graphique_6_ans():
+    try:
+        # Charger les données depuis le fichier propre
+        df = pd.read_excel("Dataset_6_ans_corrige.xlsx", parse_dates=["DATETIME"])
+
+        # Vérification de la colonne
+        if "DATETIME" not in df.columns or "CONSOMMATION_TOTALE" not in df.columns:
+            return {"error": "Les colonnes nécessaires sont manquantes dans le fichier."}
+
+        # Tri par datetime au cas où
+        df = df.sort_values(by="DATETIME")
+
+        # Tracer le graphique
+        plt.figure(figsize=(14, 6))
+        plt.plot(df["DATETIME"], df["CONSOMMATION_TOTALE"], label="Consommation totale")
+        plt.title("📊 Évolution de la consommation totale (2014 - 2019)")
+        plt.xlabel("Date et heure")
+        plt.ylabel("Consommation (MW)")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+
+        # Sauvegarde du graphique en mémoire
+        buf = io.BytesIO()
+        plt.savefig(buf, format="png")
+        plt.close()
+        buf.seek(0)
+
+        return StreamingResponse(buf, media_type="image/png")
+
+    except Exception as e:
+        return {"error": f"Erreur lors de la génération du graphique : {str(e)}"}
+    
+
+   #from fastapi.responses import JSONResponse
+
+@app.get("/api/consommation-json")
+def consommation_json(
+    annee: int = Query(..., ge=2014, le=2019),
+    mois: int = Query(None, ge=1, le=12)
+):
+    fichier = "Dataset_6_ans_corrige.xlsx"
+    if not os.path.exists(fichier):
+        return JSONResponse(status_code=404, content={"error": "Fichier introuvable"})
+
+    try:
+        df = pd.read_excel(fichier, parse_dates=["DATETIME"])
+        df = df.dropna(subset=["DATETIME", "CONSOMMATION_TOTALE"])
+        df["ANNEE"] = df["DATETIME"].dt.year
+        df["MOIS"] = df["DATETIME"].dt.month
+
+        # 🔍 Filtrage par année et mois
+        df = df[df["ANNEE"] == annee]
+        if mois:
+            df = df[df["MOIS"] == mois]
+
+        # ❌ Supprimer les lignes où consommation = 0
+        df = df[df["CONSOMMATION_TOTALE"] > 0]
+
+        # ✅ Format JSON compatible avec Chart.js
+        df["DATETIME"] = df["DATETIME"].dt.strftime("%Y-%m-%d %H:%M:%S")
+        return JSONResponse(content=df[["DATETIME", "CONSOMMATION_TOTALE"]].to_dict(orient="records"))
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    
+
+
+
+
+
+@app.get("/api/pretraitement-cnn-lstm")
+def pretraitement_cnn_lstm():
+    try:
+        df = pd.read_excel("Dataset_6_ans_corrige.xlsx", parse_dates=["DATETIME"])
+        df = df[["DATETIME", "CONSOMMATION_TOTALE"]].dropna()
+
+        # Normalisation
+        scaler = MinMaxScaler()
+        df["CONSO_NORM"] = scaler.fit_transform(df[["CONSOMMATION_TOTALE"]])
+
+        # Séquences
+        window_size = 24
+        X, y = [], []
+        for i in range(len(df) - window_size):
+            seq = df["CONSO_NORM"].values[i:i+window_size]
+            target = df["CONSO_NORM"].values[i+window_size]
+            X.append(seq)
+            y.append(target)
+
+        X = np.array(X)
+        y = np.array(y)
+
+        # Reshape pour CNN-LSTM
+        X = X.reshape((X.shape[0], 4, 6, 1))  # 4 sous-séquences de 6 pas
+
+        # Sauvegarde
+        np.save("X_cnn_lstm.npy", X)
+        np.save("y_cnn_lstm.npy", y)
+        joblib.dump(scaler, "scaler_cnn_lstm.pkl")
+
+        return JSONResponse(content={
+            "message": "✅ Données préparées avec succès pour CNN-LSTM.",
+            "shape_X": X.shape,
+            "shape_y": y.shape
+        })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+
+
+
+@app.get("/api/entrainement-cnn-lstm")
+def entrainer_cnn_lstm():
+    try:
+        X = np.load("X_cnn_lstm.npy")
+        y = np.load("y_cnn_lstm.npy")
+
+        model = Sequential([
+            TimeDistributed(Conv1D(64, 3, activation='relu'), input_shape=(4, 6, 1)),
+            TimeDistributed(MaxPooling1D(2)),
+            TimeDistributed(Flatten()),
+            LSTM(50, activation='relu'),
+            Dense(1)
+        ])
+
+        model.compile(optimizer='adam', loss='mse')
+
+        history = model.fit(X, y, epochs=20, batch_size=32,
+                            validation_split=0.2,
+                            callbacks=[EarlyStopping(monitor='val_loss', patience=3)],
+                            verbose=1)
+
+        model.save("cnn_lstm_model.h5")
+
+        return JSONResponse(content={
+            "message": "✅ Entraînement CNN-LSTM terminé.",
+            "epochs": len(history.history['loss']),
+            "val_loss_finale": history.history['val_loss'][-1]
+        })
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+
+@app.get("/api/prediction-cnn-lstm-multi")
+def prediction_multi_horizon():
+    try:
+        df = pd.read_excel("Dataset_6_ans_corrige.xlsx", parse_dates=["DATETIME"])
+        df = df[["DATETIME", "CONSOMMATION_TOTALE"]].dropna()
+
+        # Préparation
+        scaler = joblib.load("scaler_cnn_lstm.pkl")
+        df["CONSO_NORM"] = scaler.transform(df[["CONSOMMATION_TOTALE"]])
+
+        window = df["CONSO_NORM"].values[-24:]  # Derniers 24 points
+        if len(window) < 24:
+            raise ValueError("Pas assez de données.")
+
+        #model = load_model("cnn_lstm_model.h5")
+        model = load_model("cnn_lstm_model.h5", compile=False)
+
+        # Prédiction multi-horizon
+        horizons = {
+            "jour": 48,
+            "semaine": 336,
+            #"mois": 1440,
+            #"annee": 17520
+        }
+
+        predictions = {}
+        now = df["DATETIME"].max()
+
+        for label, steps in horizons.items():
+            seq = window.copy()
+            pred_norms = []
+
+            for _ in range(steps):
+                x = seq.reshape((1, 4, 6, 1))
+                y = model.predict(x, verbose=0)[0][0]
+                pred_norms.append(y)
+                seq = np.append(seq[1:], y)
+
+            y_pred = scaler.inverse_transform(np.array(pred_norms).reshape(-1, 1)).flatten()
+            timestamps = [now + timedelta(minutes=30 * (i + 1)) for i in range(steps)]
+
+            predictions[label] = {
+                "datetime": [ts.isoformat() for ts in timestamps],
+                "valeurs": y_pred.tolist()
+            }
+
+        return {
+            "message": "✅ Prédictions multiples générées.",
+            "predictions": predictions
+        }
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
