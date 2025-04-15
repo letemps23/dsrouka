@@ -9,6 +9,9 @@ import DecompositionChart from './components/DecompositionChart';
 import PeaksAndTroughsChart from './components/PeaksAndTroughsChart';
 import ArimaChart from './components/ArimaChart';
 import './App.css';
+//import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import ConsumptionPage from './pages/ConsumptionPage';
+
 
 function App() {
   return (
@@ -27,6 +30,7 @@ function App() {
             {/* ✅ Nouvelles routes */}
             <Route path="/decomposition" element={<DecompositionChart />} />
             <Route path="/pics-creux" element={<PeaksAndTroughsChart />} />
+            <Route path="/consommation-graphique" element={<ConsumptionPage />} />
           </Routes>
         </main>
       </div>

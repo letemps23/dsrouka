@@ -28,9 +28,10 @@ function Sidebar() {
     { name: "Accueil", path: "/" },
     { name: "Préparation des données", path: "/preparation" },
     { name: "Prédiction", path: "/prediction" },
-    { name: "Consommation", path: "/interpolated" },
-    { name: "Décomposition", path: "/decomposition" },
-    { name: "Pics & Creux", path: "/pics-creux" },
+    //{ name: "Consommation", path: "/interpolated" },
+    { name: "Consommation (graphique)", path: "/consommation-graphique" },
+    //{ name: "Décomposition", path: "/decomposition" },
+    //{ name: "Pics & Creux", path: "/pics-creux" },
     { name: "Téléchargement", path: "/telechargement" }
   ];
 
